@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+
+import select
+import socket
+import configparser
+import json
+import datetime
+from systemd import journal, daemon
+
+
+def main():
+    """
+    This is intended to run as a systemd service
+    """
+
+    # read config file
+    config = get_config('/etc/journal2splunk.conf')
+
+    # Create a systemd.journal.Reader instance
+    j = journal.Reader()
+
+    # Set the reader's default log level
+    j.log_level(journal.LOG_INFO)
+
+    # Only include entries since the current box has booted.
+    j.this_boot()
+    j.this_machine()
+
+    # Filter log entries.. this could be used to fine tune log collection if you're interested in specific systemd units
+    # j.add_match(
+    #    _SYSTEMD_UNIT=u'myservice.service',
+    #    SYSLOG_IDENTIFIER=u'myservice/module',
+    #    _COMM=u'myservicecommand'
+    # )
+
+    # Move to the end of the journal
+    j.seek_tail()
+
+    # Important! - Discard old journal entries
+    j.get_previous()
+
+    # Create a poll object for journal entries
+    p = select.poll()
+
+    # Register the journal's file descriptor with the polling object.
+    journal_fd = j.fileno()
+    poll_event_mask = j.get_events()
+    p.register(journal_fd, poll_event_mask)
+
+    # notify systemd that our service is ready
+    daemon.notify('READY=1')
+
+    # Poll for new journal entries every 250ms
+    while True:
+        if p.poll(250):
+            if j.process() == journal.APPEND:
+                for event in j:
+                    # do some redimentary filtering of keys that we know will break json serialization
+                    event = serialize_log_data(event)
+                    send_udp_packet(event, config['default']['remote_server'], config['default']['remote_port'])
+
+
+def serialize_log_data(event: dict) -> str:
+    """
+    filters log event data and returns a serialized JSON string
+    """
+
+    # this is used below with json.dumps() default arg
+    def json_converter(i):
+        """
+        try to convert objects to JSON supported formats and set all others to "not_serializable" if we can't
+        """
+        if isinstance(i, datetime.datetime):
+            return i.strftime('%d-%b-%Y,%H:%M:%S')
+        else:
+            return "not_serializable"
+
+    # capture the event timestamp from __REALTIME_TIMESTAMP so we can insert it at the beginning of our string later
+    # this saves Splunk some processing time and allows us to use Splunk json format when importing events.
+    try:
+        timestamp = event['_SOURCE_REALTIME_TIMESTAMP'].strftime('%d-%b-%Y,%H:%M:%S')
+    except KeyError:
+        timestamp = event['__REALTIME_TIMESTAMP'].strftime('%d-%b-%Y,%H:%M:%S')
+
+    # serializing json data and default non-serializable values with not_serialiable so that we can clean these up later
+    event_json = json.dumps(event, default=json_converter)
+    event_json = json.loads(event_json)
+
+    # here we remove 'not_serializable' values and removing values that begin with '__'
+    event_json = {k: v for (k, v) in event_json.items() if (type(v) is int or k[0:2] != '__') and v != 'not_serializable'}
+
+    # convert event to a string and prepend the timestamp to the beginning of it
+    event_str = json.dumps(event_json)
+    event_str = '{"TIMESTAMP": "' + timestamp + '", ' + event_str[1:]
+    return event_str
+
+
+def get_config(config_file_path: str) -> configparser.ConfigParser:
+    """
+    reads config file, does some basic error handling and returns a ConfigParser object
+    """
+    config = configparser.ConfigParser()
+    if not config.read(config_file_path):
+        raise RuntimeError('Could not be read config file.')
+    # make sure we got values
+    if config['default']['remote_server'] and config['default']['remote_port']:
+        return config
+    else:
+        raise RuntimeError('Could not parse config file.')
+
+
+def send_udp_packet(message: str, ip: str, port: str) -> None:
+    """
+    sends message to ip on port using udp
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.sendto(bytes(message, "utf-8"), (ip, int(port)))
+
+
+if __name__ == "__main__":
+    main()

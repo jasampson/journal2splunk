@@ -1,0 +1,12 @@
+[Unit]
+Description=journal2splunk: convert journald binary logs to JSON and send Splunk
+
+[Service]
+ExecStart=/usr/bin/journal2splunk
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+Type=notify
+User=j2splunk
+
+[Install]
+WantedBy=default.target
