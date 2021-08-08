@@ -1,7 +1,7 @@
-# journal2splunk
-This project exists because Splunk used to not have a way to directly send Linux journald binary logs to be ingested by indexers.  This is no longer the case, and I do not recommend using this since it is not supported by myself or by Splunk.
+ # :warning: You should really not use this for anything.  Splunk finally added Universal Forwarder support for journald in 8.1.0.  [Please see the release notes for details](https://docs.splunk.com/Documentation/Splunk/8.1.0/ReleaseNotes/MeetSplunk#What.27s_New_in_8.1).
 
-At the time I wrote this the expectation from Splunk was to convert journald logs into text logs which are written to disk and then use their Universal Forwarder to ingest these logs into Splunk.  While this definitely works for a lot of people, this did not sit comfortably with me so I wrote this.
+# journal2splunk
+This project exists because the Splunk Universal Forwarder does not support log ingestion from Linux journald without first writing logs out to disk.
 
 # Setup
 You will need to do several things to get things working.
